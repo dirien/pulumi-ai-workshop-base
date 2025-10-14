@@ -103,3 +103,50 @@ const podinfo = new k8s.helm.v3.Release("podinfo", {
     provider: k8sProvider,
     dependsOn: [prometheus],
 });
+
+// Install KEDA v2.18.0 for autoscaling
+const keda = new k8s.helm.v3.Release("keda", {
+    name: "keda",
+    chart: "keda",
+    version: "2.18.0",
+    repositoryOpts: {
+        repo: "https://kedacore.github.io/charts",
+    },
+    namespace: "keda",
+    createNamespace: true,
+}, {
+    ignoreChanges: ["checksum"],
+    provider: k8sProvider,
+    dependsOn: [metricsServer],
+});
+
+// Create ScaledObject to autoscale podinfo based on HTTP request metrics from Prometheus
+const podinfoScaledObject = new k8s.apiextensions.CustomResource("podinfo-scaledobject", {
+    apiVersion: "keda.sh/v1alpha1",
+    kind: "ScaledObject",
+    metadata: {
+        name: "podinfo-scaledobject",
+        namespace: "default",
+    },
+    spec: {
+        scaleTargetRef: {
+            name: "podinfo",
+        },
+        minReplicaCount: 1,
+        maxReplicaCount: 10,
+        triggers: [
+            {
+                type: "prometheus",
+                metadata: {
+                    serverAddress: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090",
+                    metricName: "http_requests_total",
+                    query: "sum(rate(http_requests_total{app=\"podinfo\"}[2m]))",
+                    threshold: "100",
+                },
+            },
+        ],
+    },
+}, {
+    provider: k8sProvider,
+    dependsOn: [keda, podinfo, prometheus],
+});
