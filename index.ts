@@ -54,22 +54,6 @@ const k8sProvider = new k8s.Provider("k8s-provider", {
     kubeconfig: doCluster.kubeConfigs[0].rawConfig,
 });
 
-const podinfo = new k8s.helm.v3.Release("podinfo", {
-    name: "podinfo",
-    chart: "oci://ghcr.io/stefanprodan/charts/podinfo",
-    values: {
-        resources: {
-            requests: {
-                cpu: "1m",
-                memory: "8Gi",
-            }
-        }
-    }
-}, {
-    ignoreChanges: ["checksum", "version"],
-    provider: k8sProvider,
-});
-
 const metricsServer = new k8s.helm.v3.Release("metrics-server", {
     name: "metrics-server",
     chart: "metrics-server",
@@ -80,4 +64,42 @@ const metricsServer = new k8s.helm.v3.Release("metrics-server", {
 }, {
     ignoreChanges: ["checksum", "version"],
     provider: k8sProvider,
+});
+
+const prometheus = new k8s.helm.v3.Release("prometheus", {
+    name: "kube-prometheus-stack",
+    chart: "oci://ghcr.io/prometheus-community/charts/kube-prometheus-stack",
+    namespace: "monitoring",
+    createNamespace: true,
+    values: {
+        prometheus: {
+            prometheusSpec: {
+                serviceMonitorSelectorNilUsesHelmValues: false,
+            }
+        }
+    }
+}, {
+    ignoreChanges: ["checksum", "version", "values"],
+    provider: k8sProvider,
+    dependsOn: [metricsServer],
+});
+
+const podinfo = new k8s.helm.v3.Release("podinfo", {
+    name: "podinfo",
+    chart: "oci://ghcr.io/stefanprodan/charts/podinfo",
+    values: {
+        resources: {
+            requests: {
+                cpu: "1m",
+                memory: "8Gi",
+            }
+        },
+        serviceMonitor: {
+            enabled: true,
+        }
+    }
+}, {
+    ignoreChanges: ["checksum", "version"],
+    provider: k8sProvider,
+    dependsOn: [prometheus],
 });
