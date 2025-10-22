@@ -91,7 +91,7 @@ const podinfo = new k8s.helm.v3.Release("podinfo", {
         resources: {
             requests: {
                 cpu: "1m",
-                memory: "8Gi",
+                memory: "16Mi",
             }
         },
         serviceMonitor: {
