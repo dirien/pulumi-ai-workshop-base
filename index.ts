@@ -103,3 +103,96 @@ const podinfo = new k8s.helm.v3.Release("podinfo", {
     provider: k8sProvider,
     dependsOn: [prometheus],
 });
+
+// Nginx Deployment
+const nginxDeployment = new k8s.apps.v1.Deployment("nginx", {
+    metadata: {
+        name: "nginx",
+        namespace: "default",
+    },
+    spec: {
+        replicas: 1,
+        selector: {
+            matchLabels: {
+                app: "nginx",
+            },
+        },
+        template: {
+            metadata: {
+                labels: {
+                    app: "nginx",
+                },
+            },
+            spec: {
+                containers: [{
+                    name: "nginx",
+                    image: "nginx:1.27",
+                    ports: [{
+                        containerPort: 80,
+                    }],
+                }],
+            },
+        },
+    },
+}, {
+    provider: k8sProvider,
+});
+
+// Nginx ClusterIP Service
+const nginxService = new k8s.core.v1.Service("nginx-service", {
+    metadata: {
+        name: "nginx-service",
+        namespace: "default",
+    },
+    spec: {
+        type: "ClusterIP",
+        selector: {
+            app: "nginx",
+        },
+        ports: [{
+            port: 80,
+            targetPort: 80,
+            protocol: "TCP",
+        }],
+    },
+}, {
+    provider: k8sProvider,
+});
+
+// Nginx Ingress
+const nginxIngress = new k8s.networking.v1.Ingress("nginx-ingress", {
+    metadata: {
+        name: "nginx-ingress",
+        namespace: "default",
+    },
+    spec: {
+        ingressClassName: "nginx",
+        rules: [{
+            http: {
+                paths: [{
+                    path: "/",
+                    pathType: "Prefix",
+                    backend: {
+                        service: {
+                            name: nginxService.metadata.name,
+                            port: {
+                                number: 80,
+                            },
+                        },
+                    },
+                }],
+            },
+        }],
+    },
+}, {
+    provider: k8sProvider,
+});
+
+// Export the external Ingress IP/hostname
+export const nginxUrl = nginxIngress.status.apply(status => {
+    const ingress = status?.loadBalancer?.ingress?.[0];
+    if (ingress) {
+        return ingress.ip || ingress.hostname;
+    }
+    return "pending";
+});
