@@ -103,3 +103,67 @@ const podinfo = new k8s.helm.v3.Release("podinfo", {
     provider: k8sProvider,
     dependsOn: [prometheus],
 });
+
+// Nginx Deployment
+const nginxDeployment = new k8s.apps.v1.Deployment("nginx", {
+    metadata: {
+        name: "nginx",
+        namespace: "default",
+    },
+    spec: {
+        replicas: 1,
+        selector: {
+            matchLabels: {
+                app: "nginx",
+            },
+        },
+        template: {
+            metadata: {
+                labels: {
+                    app: "nginx",
+                },
+            },
+            spec: {
+                containers: [{
+                    name: "nginx",
+                    image: "nginx:latest",
+                    ports: [{
+                        containerPort: 80,
+                    }],
+                }],
+            },
+        },
+    },
+}, {
+    provider: k8sProvider,
+});
+
+// Nginx LoadBalancer Service
+const nginxService = new k8s.core.v1.Service("nginx-service", {
+    metadata: {
+        name: "nginx-service",
+        namespace: "default",
+    },
+    spec: {
+        type: "LoadBalancer",
+        selector: {
+            app: "nginx",
+        },
+        ports: [{
+            port: 80,
+            targetPort: 80,
+            protocol: "TCP",
+        }],
+    },
+}, {
+    provider: k8sProvider,
+});
+
+// Export the external LoadBalancer IP/hostname
+export const nginxUrl = nginxService.status.apply(status => {
+    const ingress = status?.loadBalancer?.ingress?.[0];
+    if (ingress) {
+        return ingress.ip || ingress.hostname;
+    }
+    return "pending";
+});
