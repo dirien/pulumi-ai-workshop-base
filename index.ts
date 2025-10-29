@@ -7,7 +7,7 @@ import * as k8s from "@pulumi/kubernetes";
 const clusterRegion = "fra1";
 const nodePoolName = "default";
 const nodeCount = 1;
-const version = "1.33.1-do.4";
+const version = "1.33.1-do.5";
 const doCluster = new digitalocean.KubernetesCluster("do-cluster", {
     name: "gitops-promotion-tools-do-cluster",
     region: clusterRegion,
