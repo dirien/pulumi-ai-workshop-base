@@ -84,6 +84,7 @@ const prometheus = new k8s.helm.v3.Release("prometheus", {
     dependsOn: [metricsServer],
 });
 
+/*
 const podinfo = new k8s.helm.v3.Release("podinfo", {
     name: "podinfo",
     chart: "oci://ghcr.io/stefanprodan/charts/podinfo",
@@ -103,3 +104,4 @@ const podinfo = new k8s.helm.v3.Release("podinfo", {
     provider: k8sProvider,
     dependsOn: [prometheus],
 });
+*/
