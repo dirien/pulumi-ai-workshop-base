@@ -1,0 +1,9 @@
+config:
+  pulumi-ai-workshop-base:clusterRegion: fra1
+  pulumi-ai-workshop-base:nodeCount: "1"
+  pulumi-ai-workshop-base:kubernetesVersion: "1.33.1-do.5"
+  pulumi-ai-workshop-base:nodeSize: s-4vcpu-8gb
+  pulumi-ai-workshop-base:escProject: gitops-promotion-tools
+  pulumi-ai-workshop-base:escAuthEnvironment: pulumi-idp/auth
+environment:
+  - pulumi-idp/auth
