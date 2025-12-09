@@ -72,14 +72,18 @@ See `WORKSHOP_SCENARIOS.md` for detailed test scenarios:
 
 Custom rules are configured to reduce noise from known-safe Kubernetes components:
 
-| Exception | Pattern | Description |
-|-----------|---------|-------------|
-| `cilium_arp_fix_ping` | cilium-* pods in kube-system running ping | Network health checks from Cilium arp-fix containers |
-| `grafana_sidecar_k8s_api` | grafana-sc-* containers in monitoring namespace | Dashboard/datasource sync operations |
+### Infrastructure Namespace Exclusions
 
-These exceptions are applied to:
-- **Redirect STDOUT/STDIN rule** - excludes Cilium ping operations
-- **K8s API connection rule** - excludes Grafana sidecar connections
+The `infra_namespace` macro excludes all events from these namespaces:
+- `kube-system`, `kube-public`, `kube-node-lease`
+- `monitoring`, `kyverno`, `security`, `trivy-system`
+
+This macro is applied to override these default Falco rules (rule names must match exactly, case-sensitive):
+- **Redirect STDOUT/STDIN to Network Connection in Container** - excludes all infra namespaces
+- **Contact K8S API Server From Container** - excludes all infra namespaces (note: K8S not K8s)
+- **Terminal shell in container** - excludes all infra namespaces
+
+Workshop test workloads should be deployed to the `default` namespace to trigger Falco alerts.
 
 ## PagerDuty Alert Grouping
 
@@ -100,6 +104,20 @@ The Trivy operator is configured with increased resources and namespace exclusio
 | `excludeNamespaces` | kube-system, kube-public, kube-node-lease, monitoring, security, kyverno, trivy-system | Reduces noise from infrastructure components |
 
 Workshop test workloads should be deployed to the `default` namespace or a custom namespace to be scanned by Trivy.
+
+## Alertmanager Namespace Exclusions
+
+Alertmanager routes are configured to silence alerts from infrastructure namespaces:
+
+| Namespace | Reason |
+|-----------|--------|
+| `kube-system` | Core Kubernetes components |
+| `monitoring` | Prometheus stack itself |
+| `kyverno` | Policy engine |
+| `security` | Falco and security tools |
+| `trivy-system` | Vulnerability scanner |
+
+Alerts from these namespaces are routed to a `null` receiver (silenced). Workshop test workloads should be deployed to the `default` namespace to trigger PagerDuty incidents.
 
 ## Notes
 
