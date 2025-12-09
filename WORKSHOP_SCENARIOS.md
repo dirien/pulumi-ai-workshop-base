@@ -128,6 +128,18 @@ kubectl delete pod test-pod
 
 > **Note:** Trivy is configured to exclude infrastructure namespaces (`kube-system`, `monitoring`, `security`, `kyverno`, `trivy-system`). Test pods should be deployed in the `default` namespace or a custom namespace to be scanned.
 
+**Option A: Using Pulumi-managed deployment (recommended for Neo remediation)**
+
+The `vulnerable-nginx` deployment is already defined in `index.ts` with `replicas: 0`. Scale it up:
+
+```bash
+kubectl scale deployment vulnerable-nginx -n default --replicas=1
+```
+
+Neo can then create a PR to fix the vulnerable image in the Pulumi code.
+
+**Option B: Using kubectl (manual test)**
+
 ```bash
 # Deploy a known vulnerable image (DVWA - Damn Vulnerable Web Application)
 kubectl run vuln-pod --image=vulnerables/web-dvwa --restart=Never
@@ -179,6 +191,18 @@ kubectl delete pod vuln-nginx
 **Severity:** Warning
 
 ### Trigger the Detection
+
+**Option A: Using Pulumi-managed deployment (recommended for Neo remediation)**
+
+The `privileged-pod` deployment is already defined in `index.ts` with `replicas: 0`. Scale it up:
+
+```bash
+kubectl scale deployment privileged-pod -n default --replicas=1
+```
+
+Neo can then create a PR to remove the privileged security context in the Pulumi code.
+
+**Option B: Using kubectl (manual test)**
 
 ```bash
 # Try to create a privileged container (policy is in Audit mode)

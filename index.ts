@@ -139,7 +139,13 @@ const prometheus = new k8s.helm.v3.Release("prometheus", {
                     repeat_interval: "4h",
                     receiver: "pagerduty-security",
                     routes: [
-                        // Exclude infrastructure namespaces from PagerDuty alerts
+                        // Route Kyverno PolicyViolation alerts for default namespace to PagerDuty
+                        // (before namespace silencing, since Kyverno controller runs in kyverno namespace)
+                        {
+                            matchers: ["alertname = PolicyViolationDetected", "resource_namespace = default"],
+                            receiver: "pagerduty-security",
+                        },
+                        // Silence alerts from infrastructure namespaces
                         {
                             matchers: ["namespace = kube-system"],
                             receiver: "null",
@@ -160,7 +166,7 @@ const prometheus = new k8s.helm.v3.Release("prometheus", {
                             matchers: ["namespace = trivy-system"],
                             receiver: "null",
                         },
-                        // Route actual alerts to PagerDuty
+                        // Route security alerts to PagerDuty
                         {
                             matchers: ["severity = critical"],
                             receiver: "pagerduty-security",
@@ -174,18 +180,21 @@ const prometheus = new k8s.helm.v3.Release("prometheus", {
                 receivers: [
                     {
                         name: "null",
-                        // Empty receiver - alerts are silenced
                     },
                     {
                         name: "pagerduty-security",
                         pagerduty_configs: [{
                             routing_key: alertmanagerIntegration.integrationKey,
-                            severity: '{{ if eq .Status "firing" }}{{ .CommonLabels.severity }}{{ else }}info{{ end }}',
-                            description: '{{ .CommonAnnotations.summary }}',
+                            // Severity must be exactly: critical, warning, error, or info
+                            // Default to 'warning' if severity label is missing or invalid
+                            severity: '{{ if eq .Status "firing" }}{{ if or (eq .CommonLabels.severity "critical") (eq .CommonLabels.severity "warning") (eq .CommonLabels.severity "error") (eq .CommonLabels.severity "info") }}{{ .CommonLabels.severity }}{{ else }}warning{{ end }}{{ else }}info{{ end }}',
+                            // Description with fallback to alertname if summary is empty
+                            description: '{{ if .CommonAnnotations.summary }}{{ .CommonAnnotations.summary }}{{ else }}{{ .CommonLabels.alertname }}: {{ .CommonAnnotations.description }}{{ end }}',
                             details: {
                                 alertname: '{{ .CommonLabels.alertname }}',
                                 namespace: '{{ .CommonLabels.namespace }}',
                                 pod: '{{ .CommonLabels.pod }}',
+                                image: '{{ .CommonLabels.image_repository }}:{{ .CommonLabels.image_tag }}',
                             },
                         }],
                     },
@@ -256,7 +265,7 @@ const prometheus = new k8s.helm.v3.Release("prometheus", {
         },
     },
 }, {
-    ignoreChanges: ["checksum", "version"],
+    ignoreChanges: ["checksum", "version", "values"],
     provider: k8sProvider,
     dependsOn: [metricsServer],
 });
@@ -301,35 +310,82 @@ const falco = new k8s.helm.v3.Release("falco", {
         // Custom rules to reduce noise from known-safe Kubernetes components
         customRules: {
             "custom-rules.yaml": `
-# Macro: Infrastructure namespaces to exclude from alerting
-- macro: infra_namespace
-  condition: (k8s.ns.name in (kube-system, kube-public, kube-node-lease, monitoring, kyverno, security, trivy-system))
+# Exception: Cilium ARP-fix pings (network health checks - safe)
+- macro: cilium_arp_fix_ping
+  condition: >
+    (k8s.ns.name = "kube-system" and
+     k8s.pod.name startswith "cilium-" and
+     container.name = "arp-fix" and
+     proc.name = "ping")
 
-# Override: Redirect STDOUT/STDIN rule - exclude infrastructure namespaces
-# Rule name must match exactly (case-sensitive) to override the default rule
+# Exception: Grafana sidecars connecting to K8s API (expected behavior)
+- macro: grafana_sidecar_k8s_api
+  condition: >
+    (k8s.ns.name = "monitoring" and
+     k8s.pod.name startswith "kube-prometheus-stack-grafana-" and
+     container.name in ("grafana-sc-datasources", "grafana-sc-dashboard") and
+     proc.name = "python")
+
+# Override: Redirect STDOUT/STDIN rule with Cilium exception
+# NOTE: Rule name must EXACTLY match the default rule name (case-sensitive)
 - rule: Redirect STDOUT/STDIN to Network Connection in Container
-  desc: Detect redirection of stdout/stdin to a network connection in a container (excludes infra namespaces)
-  condition: evt.type in (dup, dup2, dup3) and evt.dir=< and container and fd.num in (0, 1, 2) and fd.type in (ipv4, ipv6) and not infra_namespace
-  output: Redirect stdout/stdin to network connection | gparent=%proc.aname[2] ggparent=%proc.aname[3] gggparent=%proc.aname[4] fd.sip=%fd.sip connection=%fd.name lport=%fd.lport rport=%fd.rport fd_type=%fd.type fd_proto=%fd.l4proto evt_type=%evt.type user=%user.name user_uid=%user.uid user_loginuid=%user.loginuid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty %container.info
+  desc: Detect redirection of stdout/stdin to a network connection in a container (with exceptions)
+  condition: >
+    evt.type in (dup, dup2, dup3) and evt.dir=< and
+    container and
+    fd.num in (0, 1, 2) and
+    fd.type in ("ipv4", "ipv6") and
+    not cilium_arp_fix_ping
+  output: >
+    Redirect stdout/stdin to network connection
+    (gparent=%proc.aname[2] ggparent=%proc.aname[3] gggparent=%proc.aname[4]
+    connection=%fd.name lport=%fd.lport rport=%fd.rport fd_type=%fd.type
+    evt_type=%evt.type user=%user.name process=%proc.name command=%proc.cmdline %container.info)
   priority: NOTICE
   tags: [network, process, mitre_execution, T1059]
+  enabled: true
 
-# Override: K8S API connection rule - exclude infrastructure namespaces
-# Note: Rule name uses K8S (uppercase S) to match the default Falco rule exactly
+# Override: K8s API connection rule with Grafana sidecar exception
+# NOTE: Rule name must EXACTLY match the default rule name (case-sensitive) - uses uppercase "K8S"
 - rule: Contact K8S API Server From Container
-  desc: Detect attempts to contact the K8S API Server from a container (excludes infra namespaces)
-  condition: evt.type = connect and evt.dir = < and container and fd.rport = 443 and k8s_api_server and not infra_namespace
-  output: Unexpected connection to K8S API Server from container | connection=%fd.name lport=%fd.lport rport=%fd.rport fd_type=%fd.type evt_type=%evt.type user=%user.name process=%proc.name command=%proc.cmdline %container.info
+  desc: Detect attempts to contact the K8s API Server from a container (with exceptions)
+  condition: >
+    evt.type = connect and
+    evt.dir = < and
+    container and
+    fd.rport = 443 and
+    fd.sip = "10.115.0.1" and
+    not grafana_sidecar_k8s_api
+  output: >
+    Unexpected connection to K8s API Server from container
+    (connection=%fd.name lport=%fd.lport rport=%fd.rport fd_type=%fd.type
+    evt_type=%evt.type user=%user.name process=%proc.name command=%proc.cmdline %container.info)
   priority: NOTICE
   tags: [network, k8s, mitre_discovery]
+  enabled: true
 
-# Override: Terminal shell in container - exclude infrastructure namespaces
-- rule: Terminal shell in container
-  desc: A shell was spawned in a container with an attached terminal (excludes infra namespaces)
-  condition: spawned_process and container and shell_procs and proc.tty != 0 and not infra_namespace
-  output: A shell was spawned in a container with an attached terminal | evt_type=%evt.type user=%user.name user_uid=%user.uid user_loginuid=%user.loginuid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty exe_flags=%evt.arg.flags %container.info
-  priority: NOTICE
-  tags: [container, shell, mitre_execution, T1059]
+# Workshop rule: Shell spawned in container (without TTY requirement)
+# The default "Terminal shell in container" rule requires proc.tty != 0,
+# but when using pulumi env run, TTY is not passed through.
+# This custom rule detects shell processes in non-system namespaces.
+- rule: Shell Spawned in Container (Workshop)
+  desc: >
+    Detects when a shell process is spawned in a container. Unlike the default rule,
+    this does not require a TTY to be attached, making it work with kubectl exec
+    executed through CI/CD pipelines or pulumi env run.
+  condition: >
+    spawned_process and
+    container and
+    shell_procs and
+    not k8s.ns.name in (kube-system, kube-public, kube-node-lease, security, monitoring, trivy-system, kyverno)
+  output: >
+    Shell spawned in container (without TTY check) |
+    pod=%k8s.pod.name namespace=%k8s.ns.name container=%container.name
+    user=%user.name command=%proc.cmdline terminal=%proc.tty
+    parent=%proc.pname image=%container.image.repository
+  priority: WARNING
+  tags: [container, shell, mitre_execution, T1059, workshop]
+  enabled: true
 `,
         },
     },
@@ -516,21 +572,135 @@ const webhookApp = new digitalocean.App("webhook-app", {
 export const webhookUrl = webhookApp.defaultIngress;
 
 // =============================================================================
-// PagerDuty Webhook Extension
+// PagerDuty Webhook Subscription (V3)
 // =============================================================================
 
-// Get the Generic V2 Webhook extension schema
-const webhookSchema = pagerduty.getExtensionSchema({
-    name: "Generic V2 Webhook",
-});
-
-// Create webhook extension to call DO Function when incident is triggered
-const pulumiWebhook = new pagerduty.Extension("pulumi-webhook", {
-    name: "Pulumi Deployment Trigger",
-    extensionSchema: webhookSchema.then(s => s.id),
-    extensionObjects: [securityService.id],
-    endpointUrl: webhookApp.defaultIngress,  // endpointUrl is a separate property, not in config!
+// V3 Webhook Subscription replaces deprecated V2 Extensions
+// See: https://developer.pagerduty.com/docs/webhooks-overview
+const webhookSubscription = new pagerduty.WebhookSubscription("pulumi-webhook", {
+    description: "Triggers Pulumi Neo for automated incident investigation",
+    deliveryMethods: [{
+        type: "http_delivery_method",
+        url: webhookApp.defaultIngress,
+    }],
+    events: [
+        "incident.triggered",  // Main event we care about - new incidents
+    ],
+    filters: [{
+        type: "service_reference",
+        id: securityService.id,
+    }],
+    type: "webhook_subscription",
 }, { dependsOn: [webhookApp] });
+
+// =============================================================================
+// Workshop Test Deployments
+// =============================================================================
+
+// Vulnerable nginx deployment for CVE detection workshop scenario
+// This deployment uses an intentionally vulnerable image (nginx:1.14.0)
+// to demonstrate Trivy vulnerability scanning and Neo automated remediation.
+// Neo should detect this and create a PR to update to nginx:stable or nginx:1.27
+const vulnerableNginxDeployment = new k8s.apps.v1.Deployment("vulnerable-nginx", {
+    metadata: {
+        name: "vulnerable-nginx",
+        namespace: "default",
+        labels: {
+            app: "vulnerable-nginx",
+            "workshop-scenario": "cve-detection",
+        },
+    },
+    spec: {
+        replicas: 0,
+        selector: {
+            matchLabels: {
+                app: "vulnerable-nginx",
+            },
+        },
+        template: {
+            metadata: {
+                labels: {
+                    app: "vulnerable-nginx",
+                },
+            },
+            spec: {
+                containers: [{
+                    name: "nginx",
+                    // VULNERABLE: nginx:1.14.0 has 35+ critical CVEs
+                    // Neo should fix this by updating to nginx:stable or nginx:1.27
+                    image: "nginx:1.14.0",
+                    ports: [{
+                        containerPort: 80,
+                    }],
+                    resources: {
+                        limits: {
+                            cpu: "100m",
+                            memory: "128Mi",
+                        },
+                        requests: {
+                            cpu: "50m",
+                            memory: "64Mi",
+                        },
+                    },
+                }],
+            },
+        },
+    },
+}, { provider: k8sProvider });
+
+// Privileged container deployment for Kyverno policy violation workshop scenario
+// This deployment uses an intentionally privileged container
+// to demonstrate Kyverno policy enforcement and Neo automated remediation.
+// Neo should detect this and create a PR to remove the privileged security context
+const privilegedPodDeployment = new k8s.apps.v1.Deployment("privileged-pod", {
+    metadata: {
+        name: "privileged-pod",
+        namespace: "default",
+        labels: {
+            app: "privileged-pod",
+            "workshop-scenario": "policy-violation",
+        },
+    },
+    spec: {
+        replicas: 0,
+        selector: {
+            matchLabels: {
+                app: "privileged-pod",
+            },
+        },
+        template: {
+            metadata: {
+                labels: {
+                    app: "privileged-pod",
+                },
+            },
+            spec: {
+                containers: [{
+                    name: "nginx",
+                    image: "nginx:stable",
+                    ports: [{
+                        containerPort: 80,
+                    }],
+                    // VIOLATION: Running privileged container is against security policy
+                    // Neo should fix this by removing the privileged: true setting
+                    securityContext: {
+                        privileged: true,
+                    },
+                    resources: {
+                        limits: {
+                            cpu: "100m",
+                            memory: "128Mi",
+                        },
+                        requests: {
+                            cpu: "50m",
+                            memory: "64Mi",
+                        },
+                    },
+                }],
+            },
+        },
+    },
+}, { provider: k8sProvider });
 
 // =============================================================================
 // Exports
