@@ -139,6 +139,28 @@ const prometheus = new k8s.helm.v3.Release("prometheus", {
                     repeat_interval: "4h",
                     receiver: "pagerduty-security",
                     routes: [
+                        // Exclude infrastructure namespaces from PagerDuty alerts
+                        {
+                            matchers: ["namespace = kube-system"],
+                            receiver: "null",
+                        },
+                        {
+                            matchers: ["namespace = monitoring"],
+                            receiver: "null",
+                        },
+                        {
+                            matchers: ["namespace = kyverno"],
+                            receiver: "null",
+                        },
+                        {
+                            matchers: ["namespace = security"],
+                            receiver: "null",
+                        },
+                        {
+                            matchers: ["namespace = trivy-system"],
+                            receiver: "null",
+                        },
+                        // Route actual alerts to PagerDuty
                         {
                             matchers: ["severity = critical"],
                             receiver: "pagerduty-security",
@@ -150,6 +172,10 @@ const prometheus = new k8s.helm.v3.Release("prometheus", {
                     ],
                 },
                 receivers: [
+                    {
+                        name: "null",
+                        // Empty receiver - alerts are silenced
+                    },
                     {
                         name: "pagerduty-security",
                         pagerduty_configs: [{
@@ -230,7 +256,7 @@ const prometheus = new k8s.helm.v3.Release("prometheus", {
         },
     },
 }, {
-    ignoreChanges: ["checksum", "version", "values"],
+    ignoreChanges: ["checksum", "version"],
     provider: k8sProvider,
     dependsOn: [metricsServer],
 });
@@ -275,57 +301,35 @@ const falco = new k8s.helm.v3.Release("falco", {
         // Custom rules to reduce noise from known-safe Kubernetes components
         customRules: {
             "custom-rules.yaml": `
-# Exception: Cilium ARP-fix pings (network health checks - safe)
-- macro: cilium_arp_fix_ping
-  condition: >
-    (k8s.ns.name = "kube-system" and
-     k8s.pod.name startswith "cilium-" and
-     container.name = "arp-fix" and
-     proc.name = "ping")
+# Macro: Infrastructure namespaces to exclude from alerting
+- macro: infra_namespace
+  condition: (k8s.ns.name in (kube-system, kube-public, kube-node-lease, monitoring, kyverno, security, trivy-system))
 
-# Exception: Grafana sidecars connecting to K8s API (expected behavior)
-- macro: grafana_sidecar_k8s_api
-  condition: >
-    (k8s.ns.name = "monitoring" and
-     k8s.pod.name startswith "kube-prometheus-stack-grafana-" and
-     container.name in ("grafana-sc-datasources", "grafana-sc-dashboard") and
-     proc.name = "python")
-
-# Override: Redirect STDOUT/STDIN rule with Cilium exception
-- rule: Redirect STDOUT/STDIN to Network Connection in container
-  desc: Detect redirection of stdout/stdin to a network connection in a container (with exceptions)
-  condition: >
-    evt.type in (dup, dup2, dup3) and evt.dir=< and
-    container and
-    fd.num in (0, 1, 2) and
-    fd.type in ("ipv4", "ipv6") and
-    not cilium_arp_fix_ping
-  output: >
-    Redirect stdout/stdin to network connection
-    (gparent=%proc.aname[2] ggparent=%proc.aname[3] gggparent=%proc.aname[4]
-    connection=%fd.name lport=%fd.lport rport=%fd.rport fd_type=%fd.type
-    evt_type=%evt.type user=%user.name process=%proc.name command=%proc.cmdline %container.info)
+# Override: Redirect STDOUT/STDIN rule - exclude infrastructure namespaces
+# Rule name must match exactly (case-sensitive) to override the default rule
+- rule: Redirect STDOUT/STDIN to Network Connection in Container
+  desc: Detect redirection of stdout/stdin to a network connection in a container (excludes infra namespaces)
+  condition: evt.type in (dup, dup2, dup3) and evt.dir=< and container and fd.num in (0, 1, 2) and fd.type in (ipv4, ipv6) and not infra_namespace
+  output: Redirect stdout/stdin to network connection | gparent=%proc.aname[2] ggparent=%proc.aname[3] gggparent=%proc.aname[4] fd.sip=%fd.sip connection=%fd.name lport=%fd.lport rport=%fd.rport fd_type=%fd.type fd_proto=%fd.l4proto evt_type=%evt.type user=%user.name user_uid=%user.uid user_loginuid=%user.loginuid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty %container.info
   priority: NOTICE
   tags: [network, process, mitre_execution, T1059]
-  enabled: true
 
-# Override: K8s API connection rule with Grafana sidecar exception
-- rule: Contact K8s API Server From Container
-  desc: Detect attempts to contact the K8s API Server from a container (with exceptions)
-  condition: >
-    evt.type = connect and
-    evt.dir = < and
-    container and
-    fd.rport = 443 and
-    fd.sip = "10.115.0.1" and
-    not grafana_sidecar_k8s_api
-  output: >
-    Unexpected connection to K8s API Server from container
-    (connection=%fd.name lport=%fd.lport rport=%fd.rport fd_type=%fd.type
-    evt_type=%evt.type user=%user.name process=%proc.name command=%proc.cmdline %container.info)
+# Override: K8S API connection rule - exclude infrastructure namespaces
+# Note: Rule name uses K8S (uppercase S) to match the default Falco rule exactly
+- rule: Contact K8S API Server From Container
+  desc: Detect attempts to contact the K8S API Server from a container (excludes infra namespaces)
+  condition: evt.type = connect and evt.dir = < and container and fd.rport = 443 and k8s_api_server and not infra_namespace
+  output: Unexpected connection to K8S API Server from container | connection=%fd.name lport=%fd.lport rport=%fd.rport fd_type=%fd.type evt_type=%evt.type user=%user.name process=%proc.name command=%proc.cmdline %container.info
   priority: NOTICE
   tags: [network, k8s, mitre_discovery]
-  enabled: true
+
+# Override: Terminal shell in container - exclude infrastructure namespaces
+- rule: Terminal shell in container
+  desc: A shell was spawned in a container with an attached terminal (excludes infra namespaces)
+  condition: spawned_process and container and shell_procs and proc.tty != 0 and not infra_namespace
+  output: A shell was spawned in a container with an attached terminal | evt_type=%evt.type user=%user.name user_uid=%user.uid user_loginuid=%user.loginuid process=%proc.name proc_exepath=%proc.exepath parent=%proc.pname command=%proc.cmdline terminal=%proc.tty exe_flags=%evt.arg.flags %container.info
+  priority: NOTICE
+  tags: [container, shell, mitre_execution, T1059]
 `,
         },
     },
