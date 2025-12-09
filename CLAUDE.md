@@ -130,7 +130,7 @@ Alerts from these namespaces are routed to a `null` receiver (silenced). Worksho
 
 The webhook (`functions/packages/security/pagerduty-webhook/server.js`) creates Pulumi Neo tasks when PagerDuty incidents are triggered:
 
-1. **Receives** PagerDuty webhook on `incident.triggered` events
+1. **Receives** PagerDuty webhook on `incident.trigger` or `incident.triggered` events (Generic V2 Webhook uses `incident.trigger`)
 2. **Fetches** alert details from PagerDuty API to get custom_details (Falco context)
 3. **Creates** a Neo task via `POST /api/preview/agents/{org}/tasks`
 4. **Neo** investigates the incident, assigns it to itself, and posts findings to incident notes

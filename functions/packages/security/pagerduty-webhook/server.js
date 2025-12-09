@@ -66,15 +66,22 @@ function extractCustomFields(alerts) {
 }
 
 async function handleWebhook(body) {
+    console.log("Received webhook payload:", JSON.stringify(body, null, 2));
+
     // Parse PagerDuty webhook payload (V3 webhook format)
     const event = body.event?.event_type || body.messages?.[0]?.event;
+    console.log("Parsed event type:", event);
 
-    if (event !== "incident.triggered") {
+    // PagerDuty Generic V2 Webhook uses "incident.trigger" (without 'd')
+    if (event !== "incident.trigger" && event !== "incident.triggered") {
+        console.log("Ignoring event:", event);
         return {
             statusCode: 200,
             body: JSON.stringify({ status: "ignored", reason: "not a trigger event" })
         };
     }
+
+    console.log("Processing trigger event:", event);
 
     const incident = body.event?.data || body.messages?.[0]?.incident;
 
@@ -140,6 +147,10 @@ Before you start, reassign the incident to the User Neo and post the result of y
 If you think that you solved the issue completely, resolve the incident using the API as well. Otherwise reassign it back to the previous assignee.
 `;
 
+    console.log("Creating Neo task with prompt:", neoPrompt.substring(0, 200) + "...");
+    console.log("Pulumi org:", PULUMI_ORG);
+    console.log("Has access token:", !!PULUMI_ACCESS_TOKEN);
+
     // Call Pulumi Neo REST API to create a new task
     const response = await fetch(
         `https://api.pulumi.com/api/preview/agents/${PULUMI_ORG}/tasks`,
@@ -161,6 +172,8 @@ If you think that you solved the issue completely, resolve the incident using th
     );
 
     const result = await response.json();
+    console.log("Neo API response:", response.status, JSON.stringify(result));
+
     return {
         statusCode: response.ok ? 201 : 500,
         body: JSON.stringify({ status: response.ok ? "ok" : "error", taskId: result.taskId, response: result })
