@@ -140,11 +140,22 @@ async function handleWebhook(body) {
 - URL: ${incidentDetails.html_url}
 ${contextSection}${falcoSection}
 
-Have a look and let me know. Use the ${customFields.esc_environment || "gitops-promotion-tools/gitops-promotion-tools-do-cluster"} ESC environment to make calls with the pagerduty-token against the PagerDuty API if needed.
+## Your Tasks
 
-Before you start, reassign the incident to the User Neo and post the result of your investigation to the incident notes. Use the API for that.
+1. **Reassign and acknowledge**: Reassign the incident to the User Neo and post that you are investigating.
 
-If you think that you solved the issue completely, resolve the incident using the API as well. Otherwise reassign it back to the previous assignee.
+2. **Investigate the issue**: Clone the Git repository (${customFields.git_repo || "N/A"}) and investigate the \`beijing/\` directory. Look at the Pulumi code in \`index.ts\` to understand the infrastructure and identify the root cause of the alert.
+
+3. **Fix if possible**: If you identify a fixable issue (e.g., vulnerable image version, misconfiguration, policy violation):
+   - Create a fix branch
+   - Make the necessary changes to resolve the issue
+   - Create a PR with the fix and post the PR link in the incident notes
+
+4. **Resolve or escalate**:
+   - If you created a PR that fixes the issue, resolve the incident and include the PR link in the resolution notes
+   - If the issue cannot be fixed automatically, post your findings to the incident notes and reassign back to the previous assignee
+
+Use the ${customFields.esc_environment || "gitops-promotion-tools/gitops-promotion-tools-do-cluster"} ESC environment to make calls with the pagerduty-token against the PagerDuty API.
 `;
 
     console.log("Creating Neo task with prompt:", neoPrompt.substring(0, 200) + "...");
