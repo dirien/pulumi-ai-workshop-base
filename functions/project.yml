@@ -1,0 +1,6 @@
+packages:
+  - name: security
+    functions:
+      - name: pagerduty-webhook
+        runtime: nodejs:20
+        web: true

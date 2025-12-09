@@ -2,12 +2,16 @@ import * as pulumi from "@pulumi/pulumi";
 import * as digitalocean from "@pulumi/digitalocean";
 import * as pulumiservice from "@pulumi/pulumiservice";
 import * as k8s from "@pulumi/kubernetes";
+import * as pagerduty from "@pulumi/pagerduty";
+import * as dockerBuild from "@pulumi/docker-build";
+
+const config = new pulumi.Config();
 
 
 const clusterRegion = "fra1";
 const nodePoolName = "default";
-const nodeCount = 1;
-const version = "1.33.1-do.5";
+const nodeCount = 3;
+const version = "1.34.1-do.1";
 const doCluster = new digitalocean.KubernetesCluster("do-cluster", {
     name: "gitops-promotion-tools-do-cluster",
     region: clusterRegion,
@@ -50,6 +54,51 @@ export const name = doCluster.name;
 export const kubeconfig = doCluster.kubeConfigs.apply(kubeConfigs => kubeConfigs[0].rawConfig);
 export const envrionmentResourceName = environmentResource.name;
 
+// =============================================================================
+// PagerDuty Resources
+// =============================================================================
+
+// Get existing user for escalation
+const pagerdutyUser = pagerduty.getUser({ email: config.require("pagerduty-email") });
+
+// Escalation policy for security incidents
+const securityEscalation = new pagerduty.EscalationPolicy("security-escalation", {
+    name: "K8s Security Escalation",
+    numLoops: 2,
+    rules: [{
+        escalationDelayInMinutes: 10,
+        targets: [{
+            type: "user_reference",
+            id: pagerdutyUser.then(u => u.id),
+        }],
+    }],
+});
+
+// PagerDuty Service for K8s security incidents
+const securityService = new pagerduty.Service("k8s-security-service", {
+    name: "Kubernetes Security Incidents",
+    escalationPolicy: securityEscalation.id,
+    alertCreation: "create_alerts_and_incidents",
+});
+
+// Events API v2 Integration for Falcosidekick
+const falcoIntegration = new pagerduty.ServiceIntegration("falco-integration", {
+    name: "Falco Security Events",
+    service: securityService.id,
+    type: "events_api_v2_inbound_integration",
+});
+
+// Events API v2 Integration for Alertmanager
+const alertmanagerIntegration = new pagerduty.ServiceIntegration("alertmanager-integration", {
+    name: "Alertmanager Events",
+    service: securityService.id,
+    type: "events_api_v2_inbound_integration",
+});
+
+// =============================================================================
+// Kubernetes Provider
+// =============================================================================
+
 const k8sProvider = new k8s.Provider("k8s-provider", {
     kubeconfig: doCluster.kubeConfigs[0].rawConfig,
 });
@@ -75,33 +124,330 @@ const prometheus = new k8s.helm.v3.Release("prometheus", {
         prometheus: {
             prometheusSpec: {
                 serviceMonitorSelectorNilUsesHelmValues: false,
-            }
-        }
-    }
+            },
+        },
+        alertmanager: {
+            config: {
+                global: {
+                    resolve_timeout: "5m",
+                },
+                route: {
+                    group_by: ["alertname", "severity"],
+                    group_wait: "30s",
+                    group_interval: "5m",
+                    repeat_interval: "4h",
+                    receiver: "pagerduty-security",
+                    routes: [
+                        {
+                            match: { severity: "critical" },
+                            receiver: "pagerduty-security",
+                        },
+                        {
+                            match: { severity: "warning" },
+                            receiver: "pagerduty-security",
+                        },
+                    ],
+                },
+                receivers: [
+                    {
+                        name: "pagerduty-security",
+                        pagerduty_configs: [{
+                            routing_key: alertmanagerIntegration.integrationKey,
+                            severity: '{{ if eq .Status "firing" }}{{ .CommonLabels.severity }}{{ else }}info{{ end }}',
+                            description: '{{ .CommonAnnotations.summary }}',
+                            details: {
+                                alertname: '{{ .CommonLabels.alertname }}',
+                                namespace: '{{ .CommonLabels.namespace }}',
+                                pod: '{{ .CommonLabels.pod }}',
+                            },
+                        }],
+                    },
+                ],
+            },
+        },
+        // Custom alerting rules for security scenarios
+        additionalPrometheusRulesMap: {
+            "security-rules": {
+                groups: [
+                    {
+                        name: "trivy-alerts",
+                        rules: [
+                            {
+                                alert: "CriticalVulnerabilityDetected",
+                                expr: 'trivy_image_vulnerabilities{severity="Critical"} > 0',
+                                "for": "1m",
+                                labels: { severity: "critical" },
+                                annotations: {
+                                    summary: "Critical CVE detected in {{ $labels.image_repository }}",
+                                    description: "Image {{ $labels.image_repository }}:{{ $labels.image_tag }} has {{ $value }} critical vulnerabilities",
+                                },
+                            },
+                        ],
+                    },
+                    {
+                        name: "kyverno-alerts",
+                        rules: [
+                            {
+                                alert: "PolicyViolationDetected",
+                                expr: "increase(kyverno_policy_results_total{rule_result='fail'}[5m]) > 0",
+                                "for": "1m",
+                                labels: { severity: "warning" },
+                                annotations: {
+                                    summary: "Kyverno policy violation: {{ $labels.policy_name }}",
+                                    description: "Policy {{ $labels.policy_name }} failed for resource in namespace {{ $labels.resource_namespace }}",
+                                },
+                            },
+                        ],
+                    },
+                    {
+                        name: "resource-alerts",
+                        rules: [
+                            {
+                                alert: "PodMemoryExhaustion",
+                                expr: "container_memory_usage_bytes / container_spec_memory_limit_bytes > 0.9",
+                                "for": "5m",
+                                labels: { severity: "warning" },
+                                annotations: {
+                                    summary: "Pod {{ $labels.pod }} memory exhaustion",
+                                    description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is using >90% of memory limit",
+                                },
+                            },
+                            {
+                                alert: "PodCPUThrottling",
+                                expr: "rate(container_cpu_cfs_throttled_seconds_total[5m]) > 0.5",
+                                "for": "5m",
+                                labels: { severity: "warning" },
+                                annotations: {
+                                    summary: "Pod {{ $labels.pod }} CPU throttling",
+                                    description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is being CPU throttled",
+                                },
+                            },
+                        ],
+                    },
+                ],
+            },
+        },
+    },
 }, {
     ignoreChanges: ["checksum", "version", "values"],
     provider: k8sProvider,
     dependsOn: [metricsServer],
 });
 
-/*
-const podinfo = new k8s.helm.v3.Release("podinfo", {
-    name: "podinfo",
-    chart: "oci://ghcr.io/stefanprodan/charts/podinfo",
+// =============================================================================
+// Security Tools - Falco (Scenario 1: Shell in Pod Detection)
+// =============================================================================
+
+const falco = new k8s.helm.v3.Release("falco", {
+    name: "falco",
+    chart: "falco",
+    repositoryOpts: { repo: "https://falcosecurity.github.io/charts" },
+    namespace: "security",
+    createNamespace: true,
     values: {
-        resources: {
-            requests: {
-                cpu: "1m",
-                memory: "8Gi",
-            }
+        driver: {
+            kind: "modern_ebpf",  // No kernel module download needed - works on DO
         },
-        serviceMonitor: {
+        falcosidekick: {
             enabled: true,
-        }
-    }
+            config: {
+                pagerduty: {
+                    routingkey: falcoIntegration.integrationKey,
+                },
+            },
+        },
+        collectors: {
+            kubernetes: {
+                enabled: true,
+            },
+        },
+    },
 }, {
-    ignoreChanges: ["checksum", "version"],
     provider: k8sProvider,
     dependsOn: [prometheus],
+    ignoreChanges: ["checksum", "version"],
 });
-*/
+
+// =============================================================================
+// Security Tools - Trivy Operator (Scenario 2: CVE Detection)
+// =============================================================================
+
+const trivyOperator = new k8s.helm.v3.Release("trivy-operator", {
+    name: "trivy-operator",
+    chart: "trivy-operator",
+    repositoryOpts: { repo: "https://aquasecurity.github.io/helm-charts/" },
+    namespace: "trivy-system",
+    createNamespace: true,
+    values: {
+        trivy: {
+            ignoreUnfixed: true,
+        },
+        operator: {
+            scannerReportTTL: "24h",
+            metricsVulnIdEnabled: true,
+        },
+        serviceMonitor: {
+            enabled: true,  // Expose metrics to Prometheus
+        },
+    },
+}, {
+    provider: k8sProvider,
+    dependsOn: [prometheus],
+    ignoreChanges: ["checksum", "version"],
+});
+
+// =============================================================================
+// Security Tools - Kyverno (Scenario 3: Policy Violation)
+// =============================================================================
+
+const kyverno = new k8s.helm.v3.Release("kyverno", {
+    name: "kyverno",
+    chart: "kyverno",
+    repositoryOpts: { repo: "https://kyverno.github.io/kyverno/" },
+    namespace: "kyverno",
+    createNamespace: true,
+    values: {
+        admissionController: {
+            serviceMonitor: {
+                enabled: true,  // Expose metrics to Prometheus
+            },
+        },
+        backgroundController: {
+            serviceMonitor: {
+                enabled: true,
+            },
+        },
+    },
+}, {
+    provider: k8sProvider,
+    dependsOn: [prometheus],
+    ignoreChanges: ["checksum", "version"],
+});
+
+// Example policy: Disallow privileged containers (Audit mode for workshop)
+const disallowPrivileged = new k8s.apiextensions.CustomResource("disallow-privileged", {
+    apiVersion: "kyverno.io/v1",
+    kind: "ClusterPolicy",
+    metadata: {
+        name: "disallow-privileged-containers",
+    },
+    spec: {
+        validationFailureAction: "Audit",  // Audit mode for workshop (use "Enforce" in prod)
+        background: true,
+        rules: [{
+            name: "disallow-privileged",
+            match: {
+                any: [{
+                    resources: {
+                        kinds: ["Pod"],
+                    },
+                }],
+            },
+            validate: {
+                message: "Privileged containers are not allowed.",
+                pattern: {
+                    spec: {
+                        containers: [{
+                            securityContext: {
+                                privileged: "!true",
+                            },
+                        }],
+                    },
+                },
+            },
+        }],
+    },
+}, { provider: k8sProvider, dependsOn: [kyverno] });
+
+// =============================================================================
+// DigitalOcean Container Registry & Webhook Service
+// =============================================================================
+
+// Create DO Container Registry
+const containerRegistry = new digitalocean.ContainerRegistry("webhook-registry", {
+    name: "security-webhook-registry",
+    subscriptionTierSlug: "starter",
+    region: clusterRegion,
+});
+
+// Get registry credentials for Docker push
+const registryCredentials = new digitalocean.ContainerRegistryDockerCredentials("registry-creds", {
+    registryName: containerRegistry.name,
+    write: true,
+});
+
+// Build and push webhook Docker image
+// DO Container Registry uses API token for authentication
+const doConfig = new pulumi.Config("digitalocean");
+const doToken = doConfig.requireSecret("token");
+const webhookImage = new dockerBuild.Image("webhook-image", {
+    tags: [pulumi.interpolate`registry.digitalocean.com/${containerRegistry.name}/pagerduty-webhook:latest`],
+    context: {
+        location: "./functions/packages/security/pagerduty-webhook",
+    },
+    platforms: [dockerBuild.Platform.Linux_amd64],
+    push: true,
+    registries: [{
+        address: "registry.digitalocean.com",
+        username: doToken,  // DO uses the API token as both username and password
+        password: doToken,
+    }],
+});
+
+// Deploy webhook as DO App Platform service (container-based)
+const webhookApp = new digitalocean.App("webhook-app", {
+    spec: {
+        name: "security-webhook-handler",
+        region: clusterRegion,
+        services: [{
+            name: "pagerduty-webhook",
+            instanceCount: 1,
+            instanceSizeSlug: "apps-s-1vcpu-0.5gb",
+            httpPort: 8080,
+            image: {
+                registryType: "DOCR",
+                registry: containerRegistry.name,
+                repository: "pagerduty-webhook",
+                tag: "latest",
+            },
+            envs: [
+                { key: "PULUMI_ACCESS_TOKEN", value: config.requireSecret("pulumi-pat"), type: "SECRET" },
+                { key: "PULUMI_ORG", value: pulumi.getOrganization() },
+                { key: "PULUMI_PROJECT", value: config.get("remediationProject") || "remediation" },
+                { key: "PULUMI_STACK", value: config.get("remediationStack") || "prod" },
+                { key: "PORT", value: "8080" },
+            ],
+            healthCheck: {
+                httpPath: "/health",
+            },
+        }],
+    },
+}, { dependsOn: [webhookImage] });
+
+// Export the service URL
+export const webhookUrl = webhookApp.defaultIngress;
+
+// =============================================================================
+// PagerDuty Webhook Extension
+// =============================================================================
+
+// Get the Generic V2 Webhook extension schema
+const webhookSchema = pagerduty.getExtensionSchema({
+    name: "Generic V2 Webhook",
+});
+
+// Create webhook extension to call DO Function when incident is triggered
+const pulumiWebhook = new pagerduty.Extension("pulumi-webhook", {
+    name: "Pulumi Deployment Trigger",
+    extensionSchema: webhookSchema.then(s => s.id),
+    extensionObjects: [securityService.id],
+    endpointUrl: webhookApp.defaultIngress,  // endpointUrl is a separate property, not in config!
+}, { dependsOn: [webhookApp] });
+
+// =============================================================================
+// Exports
+// =============================================================================
+
+export const pagerdutyServiceId = securityService.id;
+export const falcoIntegrationKey = falcoIntegration.integrationKey;
+export const alertmanagerIntegrationKey = alertmanagerIntegration.integrationKey;
