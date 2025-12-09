@@ -5,6 +5,14 @@ const PULUMI_ORG = process.env.PULUMI_ORG;
 const PAGERDUTY_API_TOKEN = process.env.PAGERDUTY_API_TOKEN;
 const PORT = process.env.PORT || 8080;
 
+// Default infrastructure context (used when alerts don't have custom fields)
+const DEFAULT_GIT_REPO = process.env.GIT_REPO || "https://github.com/dirien/pulumi-ai-workshop-base";
+const DEFAULT_PULUMI_PROJECT = process.env.PULUMI_PROJECT || "pulumi-ai-workshop-base";
+const DEFAULT_PULUMI_STACK = process.env.PULUMI_STACK || "dev";
+const DEFAULT_ESC_ENVIRONMENT = process.env.ESC_ENVIRONMENT || "gitops-promotion-tools/gitops-promotion-tools-do-cluster";
+const DEFAULT_CLUSTER_NAME = process.env.CLUSTER_NAME || "gitops-promotion-tools-do-cluster";
+const DEFAULT_CLUSTER_PROVIDER = process.env.CLUSTER_PROVIDER || "digitalocean";
+
 // Fetch alerts for an incident to get custom_details from Falco
 async function fetchIncidentAlerts(incidentId) {
     if (!PAGERDUTY_API_TOKEN || !incidentId || incidentId === "unknown") {
@@ -47,15 +55,15 @@ function extractCustomFields(alerts) {
                           firstAlert?.body?.cef_details?.details ||
                           {};
 
-    // Look for our Falco Sidekick custom fields
+    // Look for our Falco Sidekick custom fields, fall back to defaults
     return {
-        git_repo: customDetails.git_repo || "",
-        pulumi_org: customDetails.pulumi_org || "",
-        pulumi_project: customDetails.pulumi_project || "",
-        pulumi_stack: customDetails.pulumi_stack || "",
-        esc_environment: customDetails.esc_environment || "",
-        cluster_name: customDetails.cluster_name || "",
-        cluster_provider: customDetails.cluster_provider || "",
+        git_repo: customDetails.git_repo || DEFAULT_GIT_REPO,
+        pulumi_org: customDetails.pulumi_org || PULUMI_ORG,
+        pulumi_project: customDetails.pulumi_project || DEFAULT_PULUMI_PROJECT,
+        pulumi_stack: customDetails.pulumi_stack || DEFAULT_PULUMI_STACK,
+        esc_environment: customDetails.esc_environment || DEFAULT_ESC_ENVIRONMENT,
+        cluster_name: customDetails.cluster_name || DEFAULT_CLUSTER_NAME,
+        cluster_provider: customDetails.cluster_provider || DEFAULT_CLUSTER_PROVIDER,
         // Also extract Falco-specific fields
         rule: customDetails.rule || firstAlert?.body?.details?.rule || "",
         priority: customDetails.priority || firstAlert?.body?.details?.priority || "",
@@ -99,20 +107,17 @@ async function handleWebhook(body) {
     const alerts = await fetchIncidentAlerts(incidentDetails.id);
     const customFields = extractCustomFields(alerts);
 
-    // Build context section if we have custom fields
-    let contextSection = "";
-    if (customFields.git_repo || customFields.cluster_name) {
-        contextSection = `
+    // Build context section (always include since we have defaults)
+    const contextSection = `
 ## Infrastructure Context
-- Git Repository: ${customFields.git_repo || "N/A"}
-- Pulumi Org: ${customFields.pulumi_org || "N/A"}
-- Pulumi Project: ${customFields.pulumi_project || "N/A"}
-- Pulumi Stack: ${customFields.pulumi_stack || "N/A"}
-- ESC Environment: ${customFields.esc_environment || "N/A"}
-- Cluster Name: ${customFields.cluster_name || "N/A"}
-- Cluster Provider: ${customFields.cluster_provider || "N/A"}
+- Git Repository: ${customFields.git_repo}
+- Pulumi Org: ${customFields.pulumi_org}
+- Pulumi Project: ${customFields.pulumi_project}
+- Pulumi Stack: ${customFields.pulumi_stack}
+- ESC Environment: ${customFields.esc_environment}
+- Cluster Name: ${customFields.cluster_name}
+- Cluster Provider: ${customFields.cluster_provider}
 `;
-    }
 
     // Build Falco section if we have Falco-specific fields
     let falcoSection = "";
@@ -140,11 +145,25 @@ async function handleWebhook(body) {
 - URL: ${incidentDetails.html_url}
 ${contextSection}${falcoSection}
 
-Have a look and let me know. Use the ${customFields.esc_environment || "gitops-promotion-tools/gitops-promotion-tools-do-cluster"} ESC environment to make calls with the pagerduty-token against the PagerDuty API if needed.
+## Instructions
 
-Before you start, reassign the incident to the User Neo and post the result of your investigation to the incident notes. Use the API for that.
+1. **Investigate**: Analyze the incident details and determine the root cause.
 
-If you think that you solved the issue completely, resolve the incident using the API as well. Otherwise reassign it back to the previous assignee.
+2. **Check for fixable issues**: If this is a CVE/vulnerability alert (like "Critical CVE detected"), check the Git repository (${customFields.git_repo}) in the \`beijing/\` directory for a Pulumi deployment that uses the vulnerable image. The file to check is \`index.ts\`. Look for Kubernetes deployments with vulnerable images that can be updated to a patched version.
+
+3. **Fix if possible**: If you find vulnerable code that can be fixed:
+   - Clone the repo and create a fix branch
+   - Update the image tag to a patched version (e.g., nginx:1.14.0 -> nginx:stable or nginx:1.27)
+   - Create a PR with the fix
+   - Post the PR link in the incident notes
+
+4. **Update PagerDuty**:
+   - Use the ${customFields.esc_environment} ESC environment to get the pagerduty-token
+   - Reassign the incident to User "Neo" before starting
+   - Post your investigation findings and any fix PRs to the incident notes
+   - If fully resolved, resolve the incident. Otherwise reassign back to the original assignee.
+
+5. **Kubernetes access**: Use \`pulumi env run ${customFields.esc_environment} -i -- kubectl ...\` to inspect the cluster if needed.
 `;
 
     console.log("Creating Neo task with prompt:", neoPrompt.substring(0, 200) + "...");

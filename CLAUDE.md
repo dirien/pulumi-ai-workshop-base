@@ -85,6 +85,25 @@ This macro is applied to override these default Falco rules (rule names must mat
 
 Workshop test workloads should be deployed to the `default` namespace to trigger Falco alerts.
 
+### Workshop-Specific Rule: Shell Spawned in Container
+
+The default Falco "Terminal shell in container" rule requires `proc.tty != 0` (a real TTY attached). However, when running `kubectl exec -it` through `pulumi env run`, the TTY is NOT passed through properly.
+
+A custom rule "Shell Spawned in Container (Workshop)" is added that:
+- Detects shell processes in containers **without** requiring TTY
+- Only triggers for non-system namespaces (excludes kube-system, monitoring, etc.)
+- Has `WARNING` priority (higher than NOTICE) for visibility
+
+**Testing shell detection:**
+```bash
+# This works (TTY passed through):
+eval $(pulumi env open gitops-promotion-tools/gitops-promotion-tools-do-cluster --format shell)
+kubectl exec -it test-pod -- /bin/sh
+
+# This also works (no TTY, but custom workshop rule catches it):
+pulumi env run gitops-promotion-tools/gitops-promotion-tools-do-cluster -i -- kubectl exec test-pod -- /bin/sh
+```
+
 ## PagerDuty Alert Grouping
 
 Content-based alert grouping is configured on the "Kubernetes Security Incidents" service:
@@ -122,7 +141,7 @@ Alerts from these namespaces are routed to a `null` receiver (silenced). Worksho
 ## Notes
 
 - Falco uses `modern_ebpf` driver (works on DigitalOcean without kernel headers)
-- PagerDuty Extension requires `endpointUrl` as a separate property (not in config JSON)
+- **PagerDuty uses V3 Webhook Subscriptions** (V2 Extensions are deprecated/end-of-support)
 - Webhook is deployed as DO App Platform service using container from DOCR
 - Alertmanager uses modern `matchers` syntax instead of deprecated `match` for route configuration
 
@@ -152,3 +171,56 @@ Custom fields are configured in Falco Sidekick to pass infrastructure context to
 ### Auto-Deploy
 
 The DO App is configured with `deployOnPush: true` to automatically redeploy when new container images are pushed to DOCR.
+
+### Default Infrastructure Context
+
+The webhook provides default infrastructure context to Neo even when Falco custom_details are not present (e.g., for Alertmanager alerts):
+
+| Field | Default Value |
+|-------|---------------|
+| `git_repo` | `https://github.com/dirien/pulumi-ai-workshop-base` |
+| `pulumi_project` | `pulumi-ai-workshop-base` |
+| `pulumi_stack` | `dev` |
+| `esc_environment` | `gitops-promotion-tools/gitops-promotion-tools-do-cluster` |
+| `cluster_name` | `gitops-promotion-tools-do-cluster` |
+| `cluster_provider` | `digitalocean` |
+
+## Workshop Test Deployments
+
+Two intentionally insecure deployments are defined in `index.ts` for testing Neo's automated remediation capabilities:
+
+### vulnerable-nginx (CVE Detection)
+
+```typescript
+// Deployment with nginx:1.14.0 - has 35+ critical CVEs
+// Neo should create a PR to update to nginx:stable
+replicas: 0  // Disabled by default
+image: "nginx:1.14.0"
+```
+
+### privileged-pod (Policy Violation)
+
+```typescript
+// Deployment with privileged: true - violates Kyverno policy
+// Neo should create a PR to remove the privileged setting
+replicas: 0  // Disabled by default
+securityContext: { privileged: true }
+```
+
+Both deployments have `replicas: 0` so they don't run, but their pod templates are still evaluated by Trivy and Kyverno.
+
+## Alertmanager Routing for Kyverno Alerts
+
+Kyverno policy violation alerts require special routing because:
+- The Kyverno controller runs in the `kyverno` namespace
+- Alerts have `namespace=kyverno` but `resource_namespace=default` for violations in the default namespace
+- Without special routing, these alerts get silenced by the `namespace=kyverno` → `null` route
+
+The fix adds a route BEFORE namespace silencing:
+
+```yaml
+routes:
+  - matchers: ["alertname = PolicyViolationDetected", "resource_namespace = default"]
+    receiver: pagerduty-security
+  # Then namespace silencing routes...
+```
