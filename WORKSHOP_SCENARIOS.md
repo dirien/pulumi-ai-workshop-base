@@ -126,6 +126,8 @@ kubectl delete pod test-pod
 
 ### Trigger the Detection
 
+> **Note:** Trivy is configured to exclude infrastructure namespaces (`kube-system`, `monitoring`, `security`, `kyverno`, `trivy-system`). Test pods should be deployed in the `default` namespace or a custom namespace to be scanned.
+
 ```bash
 # Deploy a known vulnerable image (DVWA - Damn Vulnerable Web Application)
 kubectl run vuln-pod --image=vulnerables/web-dvwa --restart=Never

@@ -88,8 +88,22 @@ Content-based alert grouping is configured on the "Kubernetes Security Incidents
 - Time window: 1 hour (3600 seconds)
 - Reduces notification noise from repetitive alerts
 
+## Trivy Operator Configuration
+
+The Trivy operator is configured with increased resources and namespace exclusions to reduce noise:
+
+| Setting | Value | Reason |
+|---------|-------|--------|
+| `trivy.resources.limits.memory` | 2Gi | Prevents OOMKilled errors on large images (e.g., Cilium) |
+| `trivy.timeout` | 10m0s | Allows more time for large image scans |
+| `operator.scanJobTimeout` | 10m | Prevents premature job termination |
+| `excludeNamespaces` | kube-system, kube-public, kube-node-lease, monitoring, security, kyverno, trivy-system | Reduces noise from infrastructure components |
+
+Workshop test workloads should be deployed to the `default` namespace or a custom namespace to be scanned by Trivy.
+
 ## Notes
 
 - Falco uses `modern_ebpf` driver (works on DigitalOcean without kernel headers)
 - PagerDuty Extension requires `endpointUrl` as a separate property (not in config JSON)
 - Webhook is deployed as DO App Platform service using container from DOCR
+- Alertmanager uses modern `matchers` syntax instead of deprecated `match` for route configuration
