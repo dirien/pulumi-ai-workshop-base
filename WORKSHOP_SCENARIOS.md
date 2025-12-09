@@ -1,6 +1,6 @@
 # Security Incident Response Workshop - Test Scenarios
 
-This guide walks you through testing the 4 security incident response scenarios. Each scenario triggers a different detection tool, which ultimately creates a PagerDuty incident and calls the Pulumi Deployments API.
+This guide walks you through testing the 4 security incident response scenarios. Each scenario triggers a different detection tool, which ultimately creates a PagerDuty incident and triggers a Pulumi Neo task for AI-powered incident investigation.
 
 ## Prerequisites
 
@@ -61,7 +61,7 @@ Before testing, ensure:
            DO App Service (Webhook)
                       │
                       ▼
-            Pulumi Deployments API
+            Pulumi Neo API (AI Investigation)
 ```
 
 ---
@@ -98,7 +98,7 @@ exit
 2. **Falcosidekick** forwards the event to PagerDuty
 3. **PagerDuty** creates an incident
 4. **PagerDuty Webhook** calls the DO App Service
-5. **DO App Service** triggers Pulumi Deployments API
+5. **DO App Service** triggers Pulumi Neo task for AI-powered investigation
 
 ### Verification
 
@@ -143,7 +143,7 @@ kubectl run vuln-nginx --image=nginx:1.14.0 --restart=Never
 3. **Prometheus** scrapes Trivy metrics (`trivy_image_vulnerabilities`)
 4. **PrometheusRule** `CriticalVulnerabilityDetected` fires
 5. **Alertmanager** routes to PagerDuty
-6. **PagerDuty** creates incident → webhook → Pulumi
+6. **PagerDuty** creates incident → webhook → Pulumi Neo
 
 ### Verification
 
@@ -203,7 +203,7 @@ kubectl run privileged-pod --image=nginx --restart=Never \
 3. **Prometheus** scrapes Kyverno metrics (`kyverno_policy_results_total{rule_result='fail'}`)
 4. **PrometheusRule** `PolicyViolationDetected` fires
 5. **Alertmanager** routes to PagerDuty
-6. **PagerDuty** creates incident → webhook → Pulumi
+6. **PagerDuty** creates incident → webhook → Pulumi Neo
 
 ### Verification
 
@@ -301,10 +301,14 @@ doctl apps list
 doctl apps logs <app-id> --type=run
 ```
 
-### 3. Check Pulumi Deployments
-- Open: https://app.pulumi.com/{org}/{project}/{stack}/deployments
-- Verify a deployment was triggered
-- Check the environment variables passed (INCIDENT_ID, INCIDENT_TITLE, etc.)
+### 3. Check Pulumi Neo Tasks
+- Open: https://app.pulumi.com/{org}/tasks
+- Verify a Neo task was created for the incident
+- Neo will automatically:
+  - Assign the incident to itself
+  - Investigate using the PagerDuty API
+  - Post findings to incident notes
+  - Resolve the incident if appropriate
 
 ---
 

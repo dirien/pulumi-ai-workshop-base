@@ -132,9 +132,13 @@ async function handleWebhook(body) {
 - Description: ${incidentDetails.description}
 - URL: ${incidentDetails.html_url}
 ${contextSection}${falcoSection}
+
 Have a look and let me know. Use the ${customFields.esc_environment || "gitops-promotion-tools/gitops-promotion-tools-do-cluster"} ESC environment to make calls with the pagerduty-token against the PagerDuty API if needed.
 
-Before you start, assign the incident to yourself and post the result of your investigation to the incident notes. Use the API for that.`;
+Before you start, reassign the incident to the User Neo and post the result of your investigation to the incident notes. Use the API for that.
+
+If you think that you solved the issue completely, resolve the incident using the API as well. Otherwise reassign it back to the previous assignee.
+`;
 
     // Call Pulumi Neo REST API to create a new task
     const response = await fetch(
