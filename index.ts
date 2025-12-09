@@ -6,6 +6,7 @@ import * as pagerduty from "@pulumi/pagerduty";
 import * as dockerBuild from "@pulumi/docker-build";
 
 const config = new pulumi.Config();
+const pagerdutyConfig = new pulumi.Config("pagerduty");
 
 
 const clusterRegion = "fra1";
@@ -254,6 +255,16 @@ const falco = new k8s.helm.v3.Release("falco", {
                 pagerduty: {
                     routingkey: falcoIntegration.integrationKey,
                 },
+                // Custom fields added to all outputs (including PagerDuty custom_details)
+                customfields: {
+                    git_repo: "https://github.com/dirien/pulumi-ai-workshop-base",
+                    pulumi_org: "gitops-promotion-tools",
+                    pulumi_project: "pulumi-ai-workshop-base",
+                    pulumi_stack: "dev",
+                    esc_environment: "gitops-promotion-tools/gitops-promotion-tools-do-cluster",
+                    cluster_name: "gitops-promotion-tools-do-cluster",
+                    cluster_provider: "digitalocean",
+                },
             },
         },
         collectors: {
@@ -482,12 +493,12 @@ const webhookApp = new digitalocean.App("webhook-app", {
                 registry: containerRegistry.name,
                 repository: "pagerduty-webhook",
                 tag: "latest",
+                deployOnPushes: [{ enabled: true }],  // Auto-deploy when new image is pushed to DOCR
             },
             envs: [
                 { key: "PULUMI_ACCESS_TOKEN", value: config.requireSecret("pulumi-pat"), type: "SECRET" },
                 { key: "PULUMI_ORG", value: pulumi.getOrganization() },
-                { key: "PULUMI_PROJECT", value: config.get("remediationProject") || "remediation" },
-                { key: "PULUMI_STACK", value: config.get("remediationStack") || "prod" },
+                { key: "PAGERDUTY_API_TOKEN", value: pagerdutyConfig.requireSecret("token"), type: "SECRET" },
                 { key: "PORT", value: "8080" },
             ],
             healthCheck: {

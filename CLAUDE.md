@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is a **Security Incident Response Workshop** built with Pulumi (TypeScript). It deploys a DigitalOcean Kubernetes cluster with security tools that integrate with PagerDuty to trigger Pulumi Deployments on security incidents.
+This is a **Security Incident Response Workshop** built with Pulumi (TypeScript). It deploys a DigitalOcean Kubernetes cluster with security tools that integrate with PagerDuty to trigger Pulumi Neo tasks for automated incident investigation.
 
 ## Architecture
 
@@ -10,7 +10,7 @@ This is a **Security Incident Response Workshop** built with Pulumi (TypeScript)
 Detection (Falco/Trivy/Kyverno/Prometheus)
     → PagerDuty (Incident)
     → DO App Service (Webhook)
-    → Pulumi Deployments API
+    → Pulumi Neo API (AI-powered incident response)
 ```
 
 ## Key Components
@@ -28,9 +28,9 @@ Detection (Falco/Trivy/Kyverno/Prometheus)
 Config values are loaded from Pulumi ESC environment. Key config keys:
 
 ```bash
-pagerduty:token        # PagerDuty API token (secret)
+pagerduty:token        # PagerDuty API token (secret) - used by provider and webhook
 pagerduty-email        # PagerDuty user email for escalation
-pulumi-pat             # Pulumi access token for Deployments API (secret)
+pulumi-pat             # Pulumi access token for Neo API (secret)
 digitalocean:token     # DO API token (secret)
 ```
 
@@ -107,3 +107,30 @@ Workshop test workloads should be deployed to the `default` namespace or a custo
 - PagerDuty Extension requires `endpointUrl` as a separate property (not in config JSON)
 - Webhook is deployed as DO App Platform service using container from DOCR
 - Alertmanager uses modern `matchers` syntax instead of deprecated `match` for route configuration
+
+## Webhook & Neo Integration
+
+The webhook (`functions/packages/security/pagerduty-webhook/server.js`) creates Pulumi Neo tasks when PagerDuty incidents are triggered:
+
+1. **Receives** PagerDuty webhook on `incident.triggered` events
+2. **Fetches** alert details from PagerDuty API to get custom_details (Falco context)
+3. **Creates** a Neo task via `POST /api/preview/agents/{org}/tasks`
+4. **Neo** investigates the incident, assigns it to itself, and posts findings to incident notes
+
+### Falco Sidekick Custom Fields
+
+Custom fields are configured in Falco Sidekick to pass infrastructure context to PagerDuty:
+
+| Field | Value | Purpose |
+|-------|-------|---------|
+| `git_repo` | GitHub repository URL | Source code reference |
+| `pulumi_org` | Pulumi organization | Infrastructure context |
+| `pulumi_project` | Project name | Stack identification |
+| `pulumi_stack` | Stack name (dev/prod) | Environment context |
+| `esc_environment` | ESC environment path | Credentials/config source |
+| `cluster_name` | Kubernetes cluster name | Target cluster |
+| `cluster_provider` | Cloud provider (digitalocean) | Platform context |
+
+### Auto-Deploy
+
+The DO App is configured with `deployOnPush: true` to automatically redeploy when new container images are pushed to DOCR.
