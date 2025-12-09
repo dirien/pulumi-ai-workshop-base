@@ -68,6 +68,26 @@ See `WORKSHOP_SCENARIOS.md` for detailed test scenarios:
 3. Policy violation (Kyverno)
 4. Resource exhaustion (Prometheus)
 
+## Falco Custom Rules
+
+Custom rules are configured to reduce noise from known-safe Kubernetes components:
+
+| Exception | Pattern | Description |
+|-----------|---------|-------------|
+| `cilium_arp_fix_ping` | cilium-* pods in kube-system running ping | Network health checks from Cilium arp-fix containers |
+| `grafana_sidecar_k8s_api` | grafana-sc-* containers in monitoring namespace | Dashboard/datasource sync operations |
+
+These exceptions are applied to:
+- **Redirect STDOUT/STDIN rule** - excludes Cilium ping operations
+- **K8s API connection rule** - excludes Grafana sidecar connections
+
+## PagerDuty Alert Grouping
+
+Content-based alert grouping is configured on the "Kubernetes Security Incidents" service:
+- Groups alerts by `summary` and `source` fields
+- Time window: 1 hour (3600 seconds)
+- Reduces notification noise from repetitive alerts
+
 ## Notes
 
 - Falco uses `modern_ebpf` driver (works on DigitalOcean without kernel headers)
