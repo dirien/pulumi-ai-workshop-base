@@ -626,9 +626,8 @@ const vulnerableNginxDeployment = new k8s.apps.v1.Deployment("vulnerable-nginx",
             spec: {
                 containers: [{
                     name: "nginx",
-                    // VULNERABLE: nginx:1.14.0 has 35+ critical CVEs
-                    // Neo should fix this by updating to nginx:stable or nginx:1.27
-                    image: "nginx:1.14.0",
+                    // FIXED: Updated from nginx:1.14.0 to nginx:stable to resolve critical CVEs
+                    image: "nginx:stable",
                     ports: [{
                         containerPort: 80,
                     }],
