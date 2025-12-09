@@ -106,10 +106,15 @@ pulumi env run gitops-promotion-tools/gitops-promotion-tools-do-cluster -i -- ku
 
 ## PagerDuty Alert Grouping
 
-Content-based alert grouping is configured on the "Kubernetes Security Incidents" service:
-- Groups alerts by `summary` and `source` fields
-- Time window: 1 hour (3600 seconds)
-- Reduces notification noise from repetitive alerts
+Alert grouping is **disabled** on the "Kubernetes Security Incidents" service for workshop demos:
+- `alertGroupingParameters.type`: "time" with `timeout: 0` (disabled)
+- Each alert creates a new incident immediately
+- This ensures workshop participants see new incidents for each scenario
+
+**Note:** To trigger a new incident for the same alert (e.g., CVE detection), the alert must first resolve:
+1. Delete the vulnerability report: `kubectl delete vulnerabilityreport -n default <report-name>`
+2. Restart the deployment: `kubectl rollout restart deployment <name> -n default`
+3. Wait ~2 minutes for Trivy to rescan and Alertmanager to send the new alert
 
 ## Trivy Operator Configuration
 

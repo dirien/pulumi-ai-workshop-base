@@ -80,6 +80,13 @@ const securityService = new pagerduty.Service("k8s-security-service", {
     name: "Kubernetes Security Incidents",
     escalationPolicy: securityEscalation.id,
     alertCreation: "create_alerts_and_incidents",
+    // Disable alert grouping - each alert creates a new incident for workshop demos
+    alertGroupingParameters: {
+        type: "time",  // Time-based grouping with very short window
+        config: {
+            timeout: 0,  // 0 = disabled, alerts won't be grouped
+        },
+    },
 });
 
 // Events API v2 Integration for Falcosidekick
