@@ -139,11 +139,11 @@ const prometheus = new k8s.helm.v3.Release("prometheus", {
                     receiver: "pagerduty-security",
                     routes: [
                         {
-                            match: { severity: "critical" },
+                            matchers: ["severity = critical"],
                             receiver: "pagerduty-security",
                         },
                         {
-                            match: { severity: "warning" },
+                            matchers: ["severity = warning"],
                             receiver: "pagerduty-security",
                         },
                     ],
@@ -337,11 +337,28 @@ const trivyOperator = new k8s.helm.v3.Release("trivy-operator", {
     values: {
         trivy: {
             ignoreUnfixed: true,
+            // Increase timeout for large image scans
+            timeout: "10m0s",
+            // Increase resource limits to prevent OOMKilled errors on large images (e.g., Cilium)
+            resources: {
+                requests: {
+                    cpu: "100m",
+                    memory: "256M",
+                },
+                limits: {
+                    cpu: "1",
+                    memory: "2Gi",  // Increased from 500M to handle large images
+                },
+            },
         },
         operator: {
             scannerReportTTL: "24h",
             metricsVulnIdEnabled: true,
+            // Increase job timeout for large image scans
+            scanJobTimeout: "10m",
         },
+        // Exclude system and infrastructure namespaces to reduce noise and failed scans
+        excludeNamespaces: "kube-system,kube-public,kube-node-lease,monitoring,security,kyverno,trivy-system",
         serviceMonitor: {
             enabled: true,  // Expose metrics to Prometheus
         },
