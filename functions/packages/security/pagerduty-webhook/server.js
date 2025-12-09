@@ -149,7 +149,7 @@ ${contextSection}${falcoSection}
 
 1. **Reassign and acknowledge**: Reassign the incident to the User Neo and post that you are investigating.
 
-2. **Investigate the issue**: Clone the Git repository (${customFields.git_repo}) and investigate the \`beijing/\` directory. Look at the Pulumi code in \`index.ts\` to understand the infrastructure and identify the root cause of the alert.
+2. **Investigate the issue**: Clone the Git repository (${customFields.git_repo}) and investigate. Look at the Pulumi code in \`index.ts\` to understand the infrastructure and identify the root cause of the alert.
 
 3. **Fix if possible**: If you identify a fixable issue (e.g., vulnerable image version, misconfiguration, policy violation):
    - Create a fix branch
