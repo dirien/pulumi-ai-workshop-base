@@ -681,10 +681,9 @@ const privilegedPodDeployment = new k8s.apps.v1.Deployment("privileged-pod", {
                     ports: [{
                         containerPort: 80,
                     }],
-                    // VIOLATION: Running privileged container is against security policy
-                    // Neo should fix this by removing the privileged: true setting
+                    // FIXED: Removed privileged security context to comply with Kyverno policy
                     securityContext: {
-                        privileged: true,
+                        privileged: false,
                     },
                     resources: {
                         limits: {
