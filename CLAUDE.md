@@ -152,7 +152,21 @@ The webhook (`functions/packages/security/pagerduty-webhook/server.js`) creates 
 1. **Receives** PagerDuty webhook on `incident.trigger` or `incident.triggered` events (Generic V2 Webhook uses `incident.trigger`)
 2. **Fetches** alert details from PagerDuty API to get custom_details (Falco context)
 3. **Creates** a Neo task via `POST /api/preview/agents/{org}/tasks`
-4. **Neo** investigates the incident, assigns it to itself, and posts findings to incident notes
+4. **Neo** performs automated incident response
+
+### Neo Task Workflow
+
+When Neo receives an incident, it follows this workflow:
+
+1. **Reassign and acknowledge** - Assigns incident to Neo user and posts investigation notice
+2. **Investigate** - Clones the Git repository and examines the `beijing/` directory's `index.ts` Pulumi code to identify root cause
+3. **Fix if possible** - For fixable issues (vulnerable images, misconfigurations, policy violations):
+   - Creates a fix branch
+   - Makes necessary changes
+   - Creates a PR and posts the link to incident notes
+4. **Resolve or escalate**:
+   - If PR created: Resolves incident with PR link in notes
+   - If not fixable: Posts findings and reassigns to previous assignee
 
 ### Falco Sidekick Custom Fields
 
