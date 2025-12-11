@@ -1,0 +1,32 @@
+name: ${PROJECT}
+description: ${DESCRIPTION}
+runtime:
+  name: nodejs
+  options:
+    packagemanager: npm
+template:
+  displayName: "DigitalOcean Kubernetes Cluster with Monitoring"
+  description: "A production-ready DigitalOcean Kubernetes cluster template with metrics-server and Prometheus monitoring stack"
+  config:
+    digitalocean:token:
+      description: DigitalOcean API token for authentication
+      secret: true
+    clusterRegion:
+      description: The DigitalOcean region to deploy the cluster
+      default: fra1
+    clusterVersion:
+      description: The Kubernetes version to use
+      default: 1.33.1-do.5
+    nodePoolSize:
+      description: The size of the node pool instances
+      default: s-4vcpu-8gb
+    nodeCount:
+      description: The number of nodes in the default node pool
+      default: 1
+    escProject:
+      description: The Pulumi project name for the ESC environment
+      default: gitops-promotion-tools
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: digitalocean-kubernetes-monitoring
